@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Weather display for Inky pHAT on Raspberry Pi Zero.
-Shows date, current temp, feels like, high, and low via Open-Meteo.
+Shows date, current temp, feels like, high, and low via meteo.lt.
 
 Cron setup (run every 30 min):
   crontab -e
@@ -12,20 +12,18 @@ from __future__ import annotations
 
 import logging
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
 from PIL import Image, ImageDraw, ImageFont
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-LATITUDE  = 54.6872    # Vilnius, Lithuania
-LONGITUDE = 25.2797
-UNITS     = "celsius"  # "fahrenheit" or "celsius"
-LOG_FILE  = Path(__file__).parent / "weather.log"
+API_URL  = "https://api.meteo.lt/v1/places/vilnius/forecasts/long-term"
+LOG_FILE = Path(__file__).parent / "weather.log"
 # ──────────────────────────────────────────────────────────────────────────────
 
-UNIT_SYMBOL = "°C" if UNITS == "celsius" else "°F"
+UNIT_SYMBOL = "°C"
 
 FONT_PATHS = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -64,27 +62,35 @@ def load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
 
 
 def get_weather() -> dict[str, int]:
-    log.info("Fetching weather for %.4f, %.4f", LATITUDE, LONGITUDE)
-    resp = requests.get(
-        "https://api.open-meteo.com/v1/forecast",
-        params={
-            "latitude":         LATITUDE,
-            "longitude":        LONGITUDE,
-            "current":          "temperature_2m,apparent_temperature",
-            "daily":            "temperature_2m_max,temperature_2m_min",
-            "temperature_unit": UNITS,
-            "timezone":         "auto",
-            "forecast_days":    1,
-        },
-        timeout=10,
-    )
+    log.info("Fetching weather from %s", API_URL)
+    resp = requests.get(API_URL, timeout=10)
     resp.raise_for_status()
-    data = resp.json()
+    timestamps = resp.json()["forecastTimestamps"]
+
+    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+    today_date = now_utc.date()
+
+    # Parse all entries
+    parsed: list[tuple[datetime, float, float]] = []
+    for entry in timestamps:
+        dt = datetime.strptime(entry["forecastTimeUtc"], "%Y-%m-%d %H:%M:%S")
+        parsed.append((dt, entry["airTemperature"], entry["feelsLikeTemperature"]))
+
+    # Current: entry closest to now
+    current = min(parsed, key=lambda x: abs((x[0] - now_utc).total_seconds()))
+
+    # High/low: next 24 hours from now
+    from datetime import timedelta
+    cutoff = now_utc + timedelta(hours=24)
+    upcoming_temps = [temp for dt, temp, _ in parsed if now_utc <= dt <= cutoff]
+    high = max(upcoming_temps) if upcoming_temps else current[1]
+    low  = min(upcoming_temps) if upcoming_temps else current[1]
+
     weather = {
-        "temp":       round(data["current"]["temperature_2m"]),
-        "feels_like": round(data["current"]["apparent_temperature"]),
-        "high":       round(data["daily"]["temperature_2m_max"][0]),
-        "low":        round(data["daily"]["temperature_2m_min"][0]),
+        "temp":       round(current[1]),
+        "feels_like": round(current[2]),
+        "high":       round(high),
+        "low":        round(low),
     }
     log.info(
         "Weather: %d%s (feels %d%s)  H:%d  L:%d",
