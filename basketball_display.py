@@ -101,22 +101,23 @@ def parse_matches(raw_html: str) -> list[dict[str, str | int]]:
     """Return all matches as a list of dicts with keys: team_a, team_b, timestamp, time, league."""
     tree = lxml_html.fromstring(raw_html)
 
-    wrappers = tree.cssselect("#schedulesTvListDesktopNav .schedule-list-desktop-wrapper")
-    if not wrappers:
-        log.warning("Could not find schedule wrapper in HTML")
+    games = tree.cssselect("#game-schedule .game")
+    if not games:
+        log.warning("Could not find #game-schedule .game elements in HTML")
         return []
 
     matches: list[dict[str, str | int]] = []
 
-    for row in wrappers[0].cssselect(".schedule-table-row"):
-        team_els = row.cssselect(".schedule-table-row-team-name")
-        if len(team_els) < 2:
+    for game in games:
+        t1_links = game.cssselect(".team-1 > a")
+        t2_links = game.cssselect(".team-2 > a")
+        if not t1_links or not t2_links:
             continue
 
-        team_a = (team_els[0].text_content() or "").strip()
-        team_b = (team_els[1].text_content() or "").strip()
+        team_a = (t1_links[0].text_content() or "").strip()
+        team_b = (t2_links[0].text_content() or "").strip()
 
-        ts_str = row.get("data-time", "")
+        ts_str = game.get("data-time", "")
         if not ts_str:
             continue
         try:
@@ -124,10 +125,10 @@ def parse_matches(raw_html: str) -> list[dict[str, str | int]]:
         except ValueError:
             continue
 
-        time_els = row.cssselect(".schedule-table-row-time")
+        time_els = game.cssselect(".game-time a")
         time_str = (time_els[0].text_content() or "").strip() if time_els else ""
 
-        league_els = row.cssselect(".schedule-table-row-league")
+        league_els = game.cssselect(".league a")
         league = (league_els[0].text_content() or "").strip() if league_els else ""
 
         matches.append(
