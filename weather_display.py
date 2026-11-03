@@ -19,7 +19,7 @@ import requests
 from PIL import Image, ImageDraw, ImageFont
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-API_URL  = "https://api.meteo.lt/v1/places/vilnius/forecasts/long-term"
+API_URL = "https://api.meteo.lt/v1/places/vilnius/forecasts/long-term"
 LOG_FILE = Path(__file__).parent / "weather.log"
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -35,10 +35,13 @@ FONT_PATHS = [
 def setup_logging() -> logging.Logger:
     log = logging.getLogger("weather_display")
     log.setLevel(logging.WARNING)
-    fmt = logging.Formatter("%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    fmt = logging.Formatter(
+        "%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+    )
 
     # File handler — keeps last ~500 KB then rotates once
     from logging.handlers import RotatingFileHandler
+
     fh = RotatingFileHandler(LOG_FILE, maxBytes=500_000, backupCount=1)
     fh.setFormatter(fmt)
     log.addHandler(fh)
@@ -81,27 +84,33 @@ def get_weather() -> dict[str, int]:
 
     # High/low: next 24 hours from now
     from datetime import timedelta
+
     cutoff = now_utc + timedelta(hours=24)
     upcoming_temps = [temp for dt, temp, _ in parsed if now_utc <= dt <= cutoff]
     high = max(upcoming_temps) if upcoming_temps else current[1]
-    low  = min(upcoming_temps) if upcoming_temps else current[1]
+    low = min(upcoming_temps) if upcoming_temps else current[1]
 
     weather = {
-        "temp":       round(current[1]),
+        "temp": round(current[1]),
         "feels_like": round(current[2]),
-        "high":       round(high),
-        "low":        round(low),
+        "high": round(high),
+        "low": round(low),
     }
     log.info(
         "Weather: %d%s (feels %d%s)  H:%d  L:%d",
-        weather["temp"], UNIT_SYMBOL,
-        weather["feels_like"], UNIT_SYMBOL,
-        weather["high"], weather["low"],
+        weather["temp"],
+        UNIT_SYMBOL,
+        weather["feels_like"],
+        UNIT_SYMBOL,
+        weather["high"],
+        weather["low"],
     )
     return weather
 
 
-def centered_x(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, width: int) -> int:
+def centered_x(
+    draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, width: int
+) -> int:
     bbox = draw.textbbox((0, 0), text, font=font)
     return (width - (bbox[2] - bbox[0])) // 2
 
@@ -117,16 +126,26 @@ def render(weather: dict[str, int]) -> None:
     log.debug("Display size: %dx%d", W, H)
 
     img = Image.new("P", (W, H))
-    img.putpalette([255, 255, 255,   # 0 = WHITE
-                    0,   0,   0,     # 1 = BLACK
-                    255, 0,   0,     # 2 = RED
-                    ] + [0] * (256 - 3) * 3)
+    img.putpalette(
+        [
+            255,
+            255,
+            255,  # 0 = WHITE
+            0,
+            0,
+            0,  # 1 = BLACK
+            255,
+            0,
+            0,  # 2 = RED
+        ]
+        + [0] * (256 - 3) * 3
+    )
     draw = ImageDraw.Draw(img)
     draw.rectangle([0, 0, W, H], fill=display.WHITE)
     BLACK = display.BLACK
 
-    font_date  = load_font(13)
-    font_temp  = load_font(38)
+    font_date = load_font(13)
+    font_temp = load_font(38)
     font_small = load_font(13)
 
     date_str = datetime.now().strftime("%A, %B %-d")
@@ -134,18 +153,32 @@ def render(weather: dict[str, int]) -> None:
     hilo_str = f"H: {weather['high']}{UNIT_SYMBOL}   L: {weather['low']}{UNIT_SYMBOL}"
 
     # Date — centered
-    draw.text((centered_x(draw, date_str, font_date, W), 5), date_str, BLACK, font=font_date)
+    draw.text(
+        (centered_x(draw, date_str, font_date, W), 5), date_str, BLACK, font=font_date
+    )
     draw.line([(8, 22), (W - 8, 22)], fill=BLACK, width=1)
 
     # Temp / feels like — large, centered
-    draw.text((centered_x(draw, temp_str, font_temp, W), 26), temp_str, BLACK, font=font_temp)
+    draw.text(
+        (centered_x(draw, temp_str, font_temp, W), 26), temp_str, BLACK, font=font_temp
+    )
 
     # Unit label below
     unit_label = f"{UNIT_SYMBOL}  real / feels"
-    draw.text((centered_x(draw, unit_label, font_small, W), 68), unit_label, BLACK, font=font_small)
+    draw.text(
+        (centered_x(draw, unit_label, font_small, W), 68),
+        unit_label,
+        BLACK,
+        font=font_small,
+    )
 
     # High / Low
-    draw.text((centered_x(draw, hilo_str, font_small, W), 86), hilo_str, BLACK, font=font_small)
+    draw.text(
+        (centered_x(draw, hilo_str, font_small, W), 86),
+        hilo_str,
+        BLACK,
+        font=font_small,
+    )
 
     log.info("Pushing image to display")
     display.set_image(img)

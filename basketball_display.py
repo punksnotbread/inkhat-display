@@ -11,19 +11,23 @@ Cron setup (run every 30 min):
 from __future__ import annotations
 
 import logging
+import json
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import requests
-from lxml import html as lxml_html
 from PIL import Image, ImageDraw, ImageFont
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-SCHEDULE_URL = "https://www.basketnews.lt/rungtynes/tvarkarastis/lietuva.html"
-TARGET_TEAMS = {"Kauno Žalgiris", "Vilniaus Rytas"}
+SCHEDULE_URL = "https://www.basketnews.lt/rungtynes.json"
+SCHEDULE_PARAMS = {"team": 265}
+SCHEDULE_CACHE_SCOPE = "team-265-all-leagues-v1"
+TARGET_TEAMS = {"Kauno Žalgiris"}
 LOG_FILE   = Path(__file__).parent / "basketball.log"
-CACHE_FILE = Path(__file__).parent / "basketball_cache.html"
+CACHE_FILE = Path(__file__).parent / "basketball_cache.json"
 
 TEAM_NAMES: dict[str, str] = {
     # LKL
@@ -77,59 +81,76 @@ def setup_logging() -> logging.Logger:
     return log
 
 
-def fetch_schedule() -> str:
+def fetch_schedule() -> dict[str, Any]:
+    today = datetime.now().date()
+    cached_payload: dict[str, Any] | None = None
     if CACHE_FILE.exists():
-        age_days = (datetime.now() - datetime.fromtimestamp(CACHE_FILE.stat().st_mtime)).days
-        if age_days < 7:
-            log.info("Loading schedule from cache (%s)", CACHE_FILE)
-            return CACHE_FILE.read_text(encoding="utf-8")
+        try:
+            cached_payload = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+            if not isinstance(cached_payload, dict) or not isinstance(cached_payload.get("upcoming"), list):
+                raise ValueError("cache does not contain an upcoming match list")
+            cache_date = datetime.fromtimestamp(CACHE_FILE.stat().st_mtime).date()
+            if cache_date == today and cached_payload.get("_cache_scope") == SCHEDULE_CACHE_SCOPE:
+                log.info("Using today's cached schedule from %s", CACHE_FILE)
+                return cached_payload
+        except (OSError, json.JSONDecodeError, ValueError) as e:
+            log.warning("Ignoring invalid schedule cache: %s", e)
+            cached_payload = None
 
+    now_ms = int(time.time() * 1000)
+    params = {**SCHEDULE_PARAMS, "_t": now_ms, "_": now_ms}
     log.info("Fetching schedule from %s", SCHEDULE_URL)
-    resp = requests.get(
-        SCHEDULE_URL,
-        headers={"User-Agent": "Mozilla/5.0 (compatible; basketball-display/1.0)"},
-        timeout=15,
-    )
-    resp.raise_for_status()
-    html = resp.text
-    CACHE_FILE.write_text(html, encoding="utf-8")
-    log.info("Schedule cached to %s", CACHE_FILE)
-    return html
+    try:
+        resp = requests.get(
+            SCHEDULE_URL,
+            params=params,
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; basketball-display/1.0)",
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+                "Referer": "https://www.basketnews.lt/rungtynes.html?league=25&team=265",
+                "X-Requested-With": "XMLHttpRequest",
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        if not isinstance(payload, dict) or not isinstance(payload.get("upcoming"), list):
+            raise ValueError("schedule API response does not contain an upcoming match list")
+        payload["_cache_scope"] = SCHEDULE_CACHE_SCOPE
+        temp_file = CACHE_FILE.with_suffix(".json.tmp")
+        temp_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        temp_file.replace(CACHE_FILE)
+        log.info("Schedule cached to %s", CACHE_FILE)
+        return payload
+    except (requests.RequestException, ValueError, OSError) as e:
+        if cached_payload is not None:
+            log.warning("Schedule API failed; using previous cached schedule: %s", e)
+            return cached_payload
+        raise
 
 
-def parse_matches(raw_html: str) -> list[dict[str, str | int]]:
+def parse_matches(payload: dict[str, Any]) -> list[dict[str, str | int]]:
     """Return all matches as a list of dicts with keys: team_a, team_b, timestamp, time, league."""
-    tree = lxml_html.fromstring(raw_html)
-
-    games = tree.cssselect("#game-schedule .game")
-    if not games:
-        log.warning("Could not find #game-schedule .game elements in HTML")
+    games = payload.get("upcoming", [])
+    if not isinstance(games, list):
+        log.warning("Schedule API response has no upcoming match list")
         return []
 
     matches: list[dict[str, str | int]] = []
 
     for game in games:
-        t1_links = game.cssselect(".team-1 > a")
-        t2_links = game.cssselect(".team-2 > a")
-        if not t1_links or not t2_links:
-            continue
-
-        team_a = (t1_links[0].text_content() or "").strip()
-        team_b = (t2_links[0].text_content() or "").strip()
-
-        ts_str = game.get("data-time", "")
-        if not ts_str:
+        if not isinstance(game, dict):
             continue
         try:
-            timestamp = int(ts_str)
-        except ValueError:
+            timestamp = int(game["rec_time"])
+            team_a = str(game["team_name_1"] or "").strip()
+            team_b = str(game["team_name_2"] or "").strip()
+        except (KeyError, TypeError, ValueError):
             continue
-
-        time_els = game.cssselect(".game-time a")
-        time_str = (time_els[0].text_content() or "").strip() if time_els else ""
-
-        league_els = game.cssselect(".league a")
-        league = (league_els[0].text_content() or "").strip() if league_els else ""
+        if not team_a or not team_b:
+            continue
+        time_str = str(game.get("time_label") or "").strip()
+        league = str(game.get("league_name") or "").strip()
 
         matches.append(
             {
@@ -229,15 +250,14 @@ def render(match: dict[str, str | int] | None) -> None:
         ts = int(match["timestamp"])
         dt = datetime.fromtimestamp(ts)
         date_str = dt.strftime("%Y-%m-%d")
-        league_str = str(match["league"])
+        weekday = dt.strftime("%A")
         team_a = short_name(str(match["team_a"]))
         team_b = short_name(str(match["team_b"]))
 
         game_day = dt.date() == datetime.now().date()
-        team_color = RED if game_day else BLACK
 
-        # date + time + league on one row
-        top_str = f"{date_str}  {match['time']}  {league_str}"
+        # Date, weekday, and start time make it easy to see how soon the game is.
+        top_str = f"{date_str}  {weekday}  {match['time']}"
         draw.text((centered_x(draw, top_str, font_info, W), 5), top_str, BLACK, font=font_info)
         # separator
         draw.line([(8, 22), (W - 8, 22)], fill=BLACK, width=1)
@@ -272,12 +292,12 @@ def render(match: dict[str, str | int] | None) -> None:
 
 def main() -> None:
     try:
-        html = fetch_schedule()
+        payload = fetch_schedule()
     except requests.RequestException as e:
         log.error("Schedule fetch failed: %s", e)
         sys.exit(1)
 
-    matches = parse_matches(html)
+    matches = parse_matches(payload)
     match = find_next_target_match(matches)
 
     if match is None:

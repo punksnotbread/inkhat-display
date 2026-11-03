@@ -8,9 +8,9 @@ Scripts for a Raspberry Pi Zero with an Inky pHAT e-ink display. Alternates betw
 Fetches current temperature, feels-like, and daily high/low from [Open-Meteo](https://open-meteo.com/) and renders it on the display.
 
 ### `basketball_display.py`
-Fetches the Lithuanian basketball schedule from [basketnews.lt](https://www.basketnews.lt/rungtynes/tvarkarastis/lietuva.html) and shows the next upcoming match for **Kauno Žalgiris** or **Vilniaus Rytas**. Skips days with no target team playing and finds the next one.
+Fetches all upcoming league schedules for **Kauno Žalgiris** from Basketnews' JSON schedule API and shows the next upcoming match.
 
-- HTML is cached locally — fetched once per week
+- The API response is cached once per day; if fetching fails, the last cached schedule is used
 - Team names are shortened for display (e.g. "Kauno Žalgiris" → "Žalgiris")
 - On game day, red `!` markers appear on both sides of the display
 
@@ -35,4 +35,3 @@ Installed on the Pi:
 - `inky` — Pimoroni Inky pHAT library
 - `Pillow` — image rendering
 - `requests` — HTTP fetching
-- `lxml`, `cssselect` — HTML parsing
